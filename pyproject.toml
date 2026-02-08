@@ -1,0 +1,16 @@
+[project]
+name = "activity-det"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "ipykernel>=7.1.0",
+    "ipython>=9.10.0",
+    "mediapipe==0.10.14",
+    "pandas>=3.0.0",
+    "pip>=26.0",
+    "scikit-learn>=1.8.0",
+    "supervision>=0.27.0.post1",
+    "ultralytics>=8.4.9",
+]

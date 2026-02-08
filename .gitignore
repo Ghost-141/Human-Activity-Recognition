@@ -1,0 +1,23 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+*.pt
+*.zip
+*.pth
+*.task 
+
+# Virtual environments & Files
+.venv
+.env
+*json
+
+# Folders
+dataset
+dataset_face
+runs
+videos
+
