@@ -1,5 +1,4 @@
 from collections import defaultdict, deque
-
 from ultralytics import YOLO
 import torch
 import cv2

@@ -1,128 +1,166 @@
+import os
 import cv2
 import numpy as np
 import pandas as pd
-import os
 from ultralytics import YOLO
 
-# --- Configuration ---
-VIDEO_DIR = "/home/imtiaz/Documents/GitHub/activity_det/dataset"  # Your folder: Dataset/Walking/videos/...
-OUTPUT_DIR = "/home/imtiaz/Documents/GitHub/activity_det/pose_dataset"
-OUTPUT_CSV = "action_data.csv"
+# ---------------- Config ----------------
 DATA_DIR = "/home/imtiaz/Documents/GitHub/activity_det/dataset"
-SEQUENCE_LENGTH = 30  # Every sample will be exactly 30 frames
-MODEL_PATH = "yolo11n-pose.pt"  # 'n' for nano is fastest for extraction
+OUTPUT_CSV = "/home/imtiaz/Documents/GitHub/activity_det/all_pose_data.csv"
+MODEL_PATH = "yolo11m-pose.pt"
+
+VIDEO_EXTS = (".mp4", ".avi", ".mov", ".mkv")
+K = 17
+CONF_THR = 0.20
+MIN_GOOD_JOINTS = 6
+# ---------------------------------------
 
 model = YOLO(MODEL_PATH)
 
 
-def extract_landmarks(video_path, target_frames=30):
+def extract_people(results):
+    """Extract all people keypoints + track IDs for a frame."""
+    if not results or results[0].keypoints is None or len(results[0].keypoints) == 0:
+        return [], [], None
+
+    kxy = results[0].keypoints.xyn  # (P,17,2)
+    kcf = results[0].keypoints.conf  # (P,17)
+    ids = None
+    if results[0].boxes is not None and results[0].boxes.id is not None:
+        ids = results[0].boxes.id  # (P,)
+    return kxy, kcf, ids
+
+
+def forward_fill(seq, valid):
+    """Forward + backward fill missing frames for inspectable CSV."""
+    last = None
+    for i in range(len(seq)):
+        if valid[i] == 1:
+            last = seq[i].copy()
+        elif last is not None:
+            seq[i] = last
+
+    nxt = None
+    for i in range(len(seq) - 1, -1, -1):
+        if valid[i] == 1:
+            nxt = seq[i].copy()
+        elif nxt is not None:
+            seq[i] = nxt
+    return seq
+
+
+def iter_class_folders(data_dir):
+    for name in sorted(os.listdir(data_dir)):
+        p = os.path.join(data_dir, name)
+        if os.path.isdir(p):
+            yield name, p
+
+
+def iter_videos(folder):
+    for root, _, files in os.walk(folder):
+        for f in sorted(files):
+            if f.lower().endswith(VIDEO_EXTS):
+                yield os.path.join(root, f)
+
+
+def process_video(video_path, class_name):
     cap = cv2.VideoCapture(video_path)
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    rows = []
+    frame_idx = 0
 
-    if total_frames < target_frames:
-        # If video is too short, we'll repeat some frames
-        indices = np.linspace(0, total_frames - 1, target_frames).astype(int)
-    else:
-        # If video is long, we'll skip frames evenly
-        indices = np.linspace(0, total_frames - 1, target_frames).astype(int)
-
-    frames_data = []
-
-    for idx in indices:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+    while True:
         ret, frame = cap.read()
         if not ret:
-            frames_data.append(np.zeros(17 * 2))  # Padding if frame read fails
+            break
+
+        results = model.track(frame, persist=True, verbose=False)
+        kxy, kcf, ids = extract_people(results)
+
+        if len(kxy) == 0:
+            frame_idx += 1
             continue
 
-        results = model(frame, verbose=False)
+        for p in range(len(kxy)):
+            frame_valid = 0
+            pose = np.zeros((K, 3), dtype=np.float32)
 
-        # Get the keypoints of the first (most prominent) person
-        if results and len(results[0].keypoints) > 0:
-            # xyn = normalized [0-1] coordinates (17, 2)
-            kpts = results[0].keypoints.xyn[0].cpu().numpy().flatten()
-            frames_data.append(kpts)
-        else:
-            frames_data.append(np.zeros(17 * 2))  # Zero-fill if no person detected
+            if int((kcf[p] > CONF_THR).sum()) >= MIN_GOOD_JOINTS:
+                frame_valid = 1
+                pose[:, 0:2] = kxy[p].cpu().numpy().astype(np.float32)
+                pose[:, 2] = kcf[p].cpu().numpy().astype(np.float32)
+
+            track_id = -1
+            if ids is not None:
+                track_id = int(ids[p].item())
+
+            row = {
+                "class": class_name,
+                "video": os.path.basename(video_path),
+                "frame": frame_idx,
+                "track_id": track_id,
+                "frame_valid": frame_valid,
+            }
+
+            for j in range(K):
+                row[f"kpt{j}_x"] = float(pose[j, 0])
+                row[f"kpt{j}_y"] = float(pose[j, 1])
+                row[f"kpt{j}_conf"] = float(pose[j, 2])
+
+            rows.append(row)
+        frame_idx += 1
 
     cap.release()
-    return np.array(frames_data)
+    if hasattr(model, "reset"):
+        model.reset()
+
+    if not rows:
+        return []
+
+    df = pd.DataFrame(rows)
+
+    # Fill missing frames per track_id (keep frame_valid column unchanged)
+    cols = [f"kpt{j}_{c}" for j in range(K) for c in ("x", "y", "conf")]
+    filled_groups = []
+    for _, g in df.sort_values("frame").groupby("track_id", sort=False):
+        seq = g[cols].to_numpy(dtype=np.float32, copy=True).reshape(-1, K, 3)
+        valid = g["frame_valid"].to_numpy(dtype=np.int32)
+        seq = forward_fill(seq, valid)
+        g.loc[:, cols] = seq.reshape(len(g), K * 3)
+        filled_groups.append(g)
+    df = pd.concat(filled_groups, ignore_index=True)
+
+    return df.to_dict("records")
 
 
-# --- Main Processing Loop ---
+def main():
+    all_rows = []
+    video_count = 0
 
-# Configuration
+    for class_name, class_path in iter_class_folders(DATA_DIR):
+        videos = list(iter_videos(class_path))
+        if not videos:
+            print(f"[SKIP] No videos in {class_path}")
+            continue
 
-CLASSES = ["Walking", "Running"]
+        for vp in videos:
+            print(f"[INFO] Processing {vp}")
+            rows = process_video(vp, class_name)
+            all_rows.extend(rows)
+            video_count += 1
 
-VIDEO_EXTS = (".mp4", ".avi", ".mov", ".mkv")
+    if not all_rows:
+        print("No data collected.")
+        return
 
+    df = pd.DataFrame(all_rows)
+    df.to_csv(OUTPUT_CSV, index=False)
 
-def resolve_class_dir(data_dir, class_name):
-    candidates = [
-        class_name,
-        class_name.lower(),
-        class_name.upper(),
-        class_name.capitalize(),
-    ]
-    for cand in candidates:
-        cand_path = os.path.join(data_dir, cand)
-        if os.path.isdir(cand_path):
-            return cand
-    for entry in os.listdir(data_dir):
-        entry_path = os.path.join(data_dir, entry)
-        if os.path.isdir(entry_path) and entry.lower() == class_name.lower():
-            return entry
-    raise FileNotFoundError(
-        f"Class folder not found for '{class_name}' under {data_dir}"
-    )
-
-
-data_list = []
-
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-for label_idx, label_name in enumerate(CLASSES):
-    class_dir = resolve_class_dir(DATA_DIR, label_name)
-    folder_path = os.path.join(DATA_DIR, class_dir)
-    npy_files = [f for f in os.listdir(folder_path) if f.endswith(".npy")]
-
-    if npy_files:
-        source_files = npy_files
-        source_is_npy = True
-    else:
-        video_files = [
-            f for f in os.listdir(folder_path) if f.lower().endswith(VIDEO_EXTS)
-        ]
-        source_files = video_files
-        source_is_npy = False
-
-    if not source_files:
-        print(f"No .npy or video files found in {folder_path}, skipping.")
-        continue
-
-    for file_name in source_files:
-        if source_is_npy:
-            # Load (30, 34) array
-            sequence = np.load(os.path.join(folder_path, file_name))
-        else:
-            video_path = os.path.join(folder_path, file_name)
-            print(f"Extraing landmarks from {video_path}")
-            sequence = extract_landmarks(video_path, target_frames=SEQUENCE_LENGTH)
-        # Flatten each frame into rows for the CSV
-        for frame_idx, landmarks in enumerate(sequence):
-            row = {
-                "sequence_id": f"{label_name}_{file_name}",
-                "frame": frame_idx,
-                "label": label_idx,
-            }
-            # Add each of the 34 coordinates as its own column (x0, y0, x1, y1...)
-            for i, val in enumerate(landmarks):
-                row[f"kpt_{i}"] = val
-            data_list.append(row)
+    print("\n==============================")
+    print(f"Processed videos : {video_count}")
+    print(f"Total frames     : {len(df)}")
+    print(f"Saved CSV        : {OUTPUT_CSV}")
+    print("==============================\n")
 
 
-df = pd.DataFrame(data_list)
-df.to_csv(OUTPUT_CSV, index=False)
-
-print(f"Saved {len(df)} rows to {OUTPUT_CSV}")
+if __name__ == "__main__":
+    main()

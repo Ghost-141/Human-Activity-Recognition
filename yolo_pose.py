@@ -4,7 +4,7 @@ import cv2
 
 model = YOLO("yolo11n-pose.pt")
 
-cap = cv2.VideoCapture("dataset/running/running_3.mp4")
+cap = cv2.VideoCapture("dataset/PullUps/v_Pullup_g01_c01.avi")
 
 while True:
     ret, frame = cap.read()
