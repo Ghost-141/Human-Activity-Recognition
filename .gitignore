@@ -9,6 +9,7 @@ wheels/
 *.zip
 *.pth
 *.task 
+*.mp4
 
 # Virtual environments & Files
 .venv

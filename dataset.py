@@ -11,7 +11,7 @@ MODEL_PATH = "yolo11m-pose.pt"
 
 VIDEO_EXTS = (".mp4", ".avi", ".mov", ".mkv")
 K = 17
-CONF_THR = 0.20
+CONF_THR = 0.30
 MIN_GOOD_JOINTS = 6
 # ---------------------------------------
 
@@ -95,7 +95,7 @@ def process_video(video_path, class_name):
 
             row = {
                 "class": class_name,
-                "video": os.path.basename(video_path),
+                "video": os.path.realpath(video_path),
                 "frame": frame_idx,
                 "track_id": track_id,
                 "frame_valid": frame_valid,
