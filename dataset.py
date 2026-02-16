@@ -57,6 +57,21 @@ def iter_class_folders(data_dir):
 
 
 def iter_videos(folder):
+    """
+    Iterate through all video files in a given folder and its subfolders.
+
+    Yields an absolute path to each video file found.
+
+    Parameters
+    ----------
+    folder : str
+        The path to the folder to iterate through.
+
+    Yields
+    -------
+    str
+        The absolute path to a video file.
+    """
     for root, _, files in os.walk(folder):
         for f in sorted(files):
             if f.lower().endswith(VIDEO_EXTS):
@@ -64,6 +79,22 @@ def iter_videos(folder):
 
 
 def process_video(video_path, class_name):
+    """
+    Process a video file and return a list of dictionaries containing extracted pose data.
+
+    Each dictionary corresponds to a frame in the video and contains the following information:
+
+    - class: the class label of the video
+    - video: the absolute path of the video file
+    - frame: the frame index in the video
+    - track_id: the track ID of the person in the frame, or -1 if not detected
+    - frame_valid: 1 if the person was detected in the frame, 0 otherwise
+    - kptX_x, kptX_y, kptX_conf: the x, y coordinates and confidence of the Xth keypoint
+
+    The output list will contain one dictionary per frame in the video.
+
+    The function will fill in missing frames per track_id by forward and backward filling.
+    """
     cap = cv2.VideoCapture(video_path)
     rows = []
     frame_idx = 0
